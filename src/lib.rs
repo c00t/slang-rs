@@ -1,15 +1,17 @@
-use std::ffi::{CStr, CString};
-use std::ptr::{null, null_mut};
-
 use slang_sys as sys;
+use std::ffi::{c_void, CStr, CString};
+use std::pin::Pin;
+use std::ptr::{null, null_mut, NonNull};
 
 pub use sys::{
 	slang_CompilerOptionName as CompilerOptionName, slang_SessionDesc as SessionDesc,
-	slang_TargetDesc as TargetDesc, SlangCompileTarget as CompileTarget,
-	SlangDebugInfoLevel as DebugInfoLevel, SlangFloatingPointMode as FloatingPointMode,
-	SlangLineDirectiveMode as LineDirectiveMode, SlangMatrixLayoutMode as MatrixLayoutMode,
-	SlangOptimizationLevel as OptimizationLevel, SlangSourceLanguage as SourceLanguage,
-	SlangStage as Stage, SlangUUID as UUID,
+	slang_TargetDesc as TargetDesc, EntryPointReflection, ProgramLayout, ResultCode,
+	SlangCapabilityID, SlangCompileTarget as CompileTarget, SlangDebugInfoLevel as DebugInfoLevel,
+	SlangFloatingPointMode as FloatingPointMode, SlangLineDirectiveMode as LineDirectiveMode,
+	SlangMatrixLayoutMode as MatrixLayoutMode, SlangOptimizationLevel as OptimizationLevel,
+	SlangProfileID, SlangSourceLanguage as SourceLanguage, SlangStage as Stage, SlangUUID as UUID,
+	TypeLayoutReflection, TypeParameterReflection, TypeReflection, UserAttribute,
+	VariableLayoutReflection, VariableReflection,
 };
 
 macro_rules! vcall {
@@ -28,7 +30,7 @@ const fn uuid(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> UUID {
 }
 
 pub enum Error {
-	Code(sys::SlangResult),
+	Code(ResultCode),
 	Blob(Blob),
 }
 
@@ -43,26 +45,16 @@ impl std::fmt::Debug for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-fn result_from_blob(code: sys::SlangResult, blob: *mut sys::slang_IBlob) -> Result<()> {
-	if code < 0 {
-		Err(Error::Blob(Blob(IUnknown(
-			std::ptr::NonNull::new(blob as *mut _).unwrap(),
-		))))
-	} else {
-		Ok(())
-	}
-}
-
 pub struct ProfileID(sys::SlangProfileID);
 
 impl ProfileID {
-	pub const UNKNOWN: ProfileID = ProfileID(sys::SlangProfileID_SlangProfileUnknown);
+	pub const UNKNOWN: ProfileID = ProfileID(sys::SlangProfileID::SlangProfileUnknown);
 }
 
 pub struct CapabilityID(sys::SlangCapabilityID);
 
 impl CapabilityID {
-	pub const UNKNOWN: CapabilityID = CapabilityID(sys::SlangCapabilityID_SlangCapabilityUnknown);
+	pub const UNKNOWN: CapabilityID = CapabilityID(sys::SlangCapabilityID::SlangCapabilityUnknown);
 }
 
 unsafe trait Interface: Sized {
@@ -104,14 +96,14 @@ unsafe impl Interface for IUnknown {
 
 impl Clone for IUnknown {
 	fn clone(&self) -> Self {
-		vcall!(self, ISlangUnknown_addRef());
+		let _ref_count = vcall!(self, ISlangUnknown_addRef());
 		Self(self.0)
 	}
 }
 
 impl Drop for IUnknown {
 	fn drop(&mut self) {
-		vcall!(self, ISlangUnknown_release());
+		let _ref_count = vcall!(self, ISlangUnknown_release());
 	}
 }
 
@@ -156,33 +148,61 @@ unsafe impl Interface for GlobalSession {
 }
 
 impl GlobalSession {
-	pub fn new() -> Option<GlobalSession> {
+	pub fn new() -> Result<GlobalSession> {
 		let mut global_session = null_mut();
-		unsafe { sys::slang_createGlobalSession(sys::SLANG_API_VERSION as _, &mut global_session) };
-		Some(GlobalSession(IUnknown(std::ptr::NonNull::new(
-			global_session as *mut _,
-		)?)))
+		let result = unsafe {
+			sys::slang_createGlobalSession(sys::SLANG_API_VERSION as _, &mut global_session)
+		};
+		if result.is_failed() {
+			return Err(Error::Code(result));
+		} else {
+			Ok(GlobalSession(IUnknown(
+				std::ptr::NonNull::new(global_session as *mut _)
+					.expect("Result conflict with null ptr!"),
+			)))
+		}
 	}
 
-	pub fn new_without_std_lib() -> Option<GlobalSession> {
+	pub fn new_without_std_lib() -> Result<GlobalSession> {
 		let mut global_session = null_mut();
-		unsafe {
+		let result = unsafe {
 			sys::slang_createGlobalSessionWithoutStdLib(
 				sys::SLANG_API_VERSION as _,
 				&mut global_session,
 			)
 		};
-		Some(GlobalSession(IUnknown(std::ptr::NonNull::new(
-			global_session as *mut _,
-		)?)))
+		if result.is_failed() {
+			return Err(Error::Code(result));
+		} else {
+			Ok(GlobalSession(IUnknown(
+				std::ptr::NonNull::new(global_session as *mut _)
+					.expect("Result conflict with null ptr!"),
+			)))
+		}
 	}
 
-	pub fn create_session(&self, desc: &SessionDesc) -> Option<Session> {
+	pub fn create_session(&self, desc: &SessionDesc) -> Result<Session> {
 		let mut session = null_mut();
-		vcall!(self, createSession(desc, &mut session));
-		Some(Session(IUnknown(std::ptr::NonNull::new(
-			session as *mut _,
-		)?)))
+		let result = vcall!(self, createSession(desc, &mut session));
+
+		if result.is_failed() {
+			return Err(Error::Code(result));
+		}
+
+		let session = Session(IUnknown(
+			std::ptr::NonNull::new(session as *mut _).expect("Result conflict with null ptr!"),
+		));
+
+		// TODO: Without adding an extra reference, the code crashes when Session is dropped.
+		// Investigate why this is happening, the current solution could cause a memory leak.
+		//
+		// Note: cupofc0t
+		// According to https://shader-slang.com/slang/user-guide/compiling.html#using-the-compilation-api
+		// We should use a `ComPtr` to wrap around the `Session` object to handle the reference counting,
+		// I think it's correct to add an extra reference when IUnknown is created from a raw pointer on rust side.
+		// unsafe { (session.as_unknown().vtable().ISlangUnknown_addRef)(session.as_raw()) };
+
+		Ok(session)
 	}
 
 	pub fn find_profile(&self, name: &str) -> ProfileID {
@@ -231,24 +251,29 @@ impl Session {
 
 	pub fn create_composite_component_type(
 		&self,
-		components: &[ComponentType],
+		components: &[&ComponentType],
 	) -> Result<ComponentType> {
+		let components: Vec<*mut std::ffi::c_void> =
+			unsafe { components.iter().map(|c| c.as_raw()).collect() };
+
 		let mut composite_component_type = null_mut();
 		let mut diagnostics = null_mut();
+		let res = vcall!(
+			self,
+			createCompositeComponentType(
+				components.as_ptr() as _,
+				components.len() as _,
+				&mut composite_component_type,
+				&mut diagnostics
+			)
+		);
 
-		result_from_blob(
-			vcall!(
-				self,
-				createCompositeComponentType(
-					components.as_ptr() as _,
-					components.len() as _,
-					&mut composite_component_type,
-					&mut diagnostics
-				)
-			),
-			diagnostics,
-		)?;
-
+		if res.is_failed() {
+			let blob = Blob(IUnknown(
+				std::ptr::NonNull::new(diagnostics as *mut _).unwrap(),
+			));
+			return Err(Error::Blob(blob));
+		}
 		Ok(ComponentType(IUnknown(
 			std::ptr::NonNull::new(composite_component_type as *mut _).unwrap(),
 		)))
@@ -273,32 +298,46 @@ impl ComponentType {
 	pub fn link(&self) -> Result<ComponentType> {
 		let mut linked_component_type = null_mut();
 		let mut diagnostics = null_mut();
+		let result = vcall!(self, link(&mut linked_component_type, &mut diagnostics));
 
-		result_from_blob(
-			vcall!(self, link(&mut linked_component_type, &mut diagnostics)),
-			diagnostics,
-		)?;
-
+		if result.is_failed() {
+			let blob = Blob(IUnknown(
+				std::ptr::NonNull::new(diagnostics as *mut _).unwrap(),
+			));
+			return Err(Error::Blob(blob));
+		}
 		Ok(ComponentType(IUnknown(
 			std::ptr::NonNull::new(linked_component_type as *mut _).unwrap(),
 		)))
 	}
 
-	pub fn get_entry_point_code(&self, index: i64, target: i64) -> Result<Blob> {
+	pub fn get_entry_point_code(&self, index: i64, target: i64) -> Result<Vec<u8>> {
 		let mut code = null_mut();
 		let mut diagnostics = null_mut();
+		let res = vcall!(
+			self,
+			getEntryPointCode(index, target, &mut code, &mut diagnostics)
+		);
+		if res.is_failed() {
+			let blob = Blob(IUnknown(
+				std::ptr::NonNull::new(diagnostics as *mut _).unwrap(),
+			));
+			return Err(Error::Blob(blob));
+		}
+		let blob = Blob(IUnknown(std::ptr::NonNull::new(code as *mut _).unwrap()));
+		Ok(Vec::from(blob.as_slice()))
+	}
 
-		result_from_blob(
-			vcall!(
-				self,
-				getEntryPointCode(index, target, &mut code, &mut diagnostics)
-			),
-			diagnostics,
-		)?;
-
-		Ok(Blob(IUnknown(
-			std::ptr::NonNull::new(code as *mut _).unwrap(),
-		)))
+	/// Get the reflection layout of this component type.
+	///
+	/// According to Slang Docs:
+	/// In the current Slang API, the ProgramLayout type is not reference-counted.
+	/// Currently, the lifetime of a ProgramLayout is tied to the IComponentType that returned it.
+	/// An application must ensure that it retains the given IComponentType for as long as it uses the ProgramLayout.
+	pub fn get_layout(&self, target_index: i64) -> Pin<&mut ProgramLayout> {
+		let mut diagnostics = null_mut();
+		let layout = vcall!(self, getLayout(target_index, &mut diagnostics));
+		unsafe { Pin::new_unchecked(layout.as_mut().unwrap()) }
 	}
 }
 
@@ -363,13 +402,17 @@ unsafe impl Downcast<ComponentType> for Module {
 }
 
 impl Module {
-	pub fn find_entry_point_by_name(&self, name: &str) -> Option<EntryPoint> {
+	pub fn find_entry_point_by_name(&self, name: &str) -> Result<EntryPoint> {
 		let name = CString::new(name).unwrap();
 		let mut entry_point = null_mut();
-		vcall!(self, findEntryPointByName(name.as_ptr(), &mut entry_point));
-		Some(EntryPoint(IUnknown(std::ptr::NonNull::new(
-			entry_point as *mut _,
-		)?)))
+		let result = vcall!(self, findEntryPointByName(name.as_ptr(), &mut entry_point));
+		if result.is_failed() {
+			return Err(Error::Code(result));
+		}
+
+		Ok(EntryPoint(IUnknown(
+			std::ptr::NonNull::new(entry_point as *mut _).expect("Result conflict with null ptr!"),
+		)))
 	}
 
 	pub fn name(&self) -> &str {
@@ -504,7 +547,7 @@ impl OptionsBuilder {
 		}
 	}
 
-	fn push_ints(mut self, name: CompilerOptionName, i0: i32, i1: i32) -> Self {
+	pub fn push_ints(mut self, name: CompilerOptionName, i0: i32, i1: i32) -> Self {
 		self.options.push(sys::slang_CompilerOptionEntry {
 			name,
 			value: sys::slang_CompilerOptionValue {
@@ -519,7 +562,7 @@ impl OptionsBuilder {
 		self
 	}
 
-	fn push_strings(mut self, name: CompilerOptionName, s0: *const i8, s1: *const i8) -> Self {
+	pub fn push_strings(mut self, name: CompilerOptionName, s0: *const i8, s1: *const i8) -> Self {
 		self.options.push(sys::slang_CompilerOptionEntry {
 			name,
 			value: sys::slang_CompilerOptionValue {
@@ -534,7 +577,7 @@ impl OptionsBuilder {
 		self
 	}
 
-	fn push_str1(mut self, name: CompilerOptionName, s0: &str) -> Self {
+	pub fn push_str1(mut self, name: CompilerOptionName, s0: &str) -> Self {
 		let s0 = CString::new(s0).unwrap();
 		let s0_ptr = s0.as_ptr();
 		self.strings.push(s0);
@@ -542,7 +585,7 @@ impl OptionsBuilder {
 		self.push_strings(name, s0_ptr, null())
 	}
 
-	fn push_str2(mut self, name: CompilerOptionName, s0: &str, s1: &str) -> Self {
+	pub fn push_str2(mut self, name: CompilerOptionName, s0: &str, s1: &str) -> Self {
 		let s0 = CString::new(s0).unwrap();
 		let s0_ptr = s0.as_ptr();
 		self.strings.push(s0);
@@ -604,6 +647,43 @@ impl OptionsBuilder {
 
 #[cfg(test)]
 mod tests {
+	use super::*;
 	#[test]
-	fn compiles() {}
+	fn compute_shader_compiles() -> Result<()> {
+		let global_session = GlobalSession::new().unwrap();
+		let search_path = std::ffi::CString::new("shaders/").unwrap();
+		// All compiler options are available through this builder.
+		let session_options = OptionsBuilder::new()
+			.optimization(OptimizationLevel::High)
+			.matrix_layout_row(true);
+
+		let target_desc = TargetDescBuilder::new()
+			.format(CompileTarget::SpirvAsm)
+			.profile(global_session.find_profile("sm_6_5"));
+
+		let session_desc = SessionDescBuilder::new()
+			.targets(&[*target_desc])
+			.search_paths(&[search_path.as_ptr()])
+			.options(&session_options);
+
+		let session = global_session.create_session(&session_desc).unwrap();
+
+		let module = session.load_module("testcompute").unwrap();
+
+		let entry_point = module.find_entry_point_by_name("computeMain").unwrap();
+
+		let program = session
+			.create_composite_component_type(&[module.downcast(), entry_point.downcast()])?;
+
+		let linked_program = program.link()?;
+
+		let mut reflection = linked_program.get_layout(0);
+		let entrypoint_count = reflection.as_mut().get_entry_point_count();
+		assert_eq!(entrypoint_count, 1);
+
+		let params_count = reflection.as_mut().get_parameter_count();
+		assert_eq!(params_count, 3);
+
+		Ok(())
+	}
 }

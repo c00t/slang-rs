@@ -12,13 +12,22 @@ fn main() {
 		.map(PathBuf::from)
 		.expect("Couldn't determine output directory.");
 
+	// autocxx will generate class bindings that bindgen can't generate
+	let mut b =
+		autocxx_build::Builder::new("src/cxxbind.rs", &[&slang_dir, &slang_dir.join("include")])
+			.build()
+			.expect("Couldn't build autocxx bindings.");
+	// This assumes all your C++ bindings are in main.rs
+	b.flag_if_supported("-std=c++17").compile("slang-cxxbind"); // arbitrary library name, pick anything
+
 	link_libraries(&slang_dir);
 
+	// bindgen will generate the main source of the bindings
 	bindgen::builder()
 		.header(slang_dir.join("include/slang.h").to_str().unwrap())
 		.clang_arg("-v")
 		.clang_arg("-xc++")
-		.clang_arg("-std=c++14")
+		.clang_arg("-std=c++17")
 		.allowlist_function("slang_.*")
 		.allowlist_type("slang.*")
 		.allowlist_var("SLANG_.*")
@@ -31,8 +40,6 @@ fn main() {
 		.default_enum_style(bindgen::EnumVariation::Rust {
 			non_exhaustive: false,
 		})
-		.constified_enum("SlangProfileID")
-		.constified_enum("SlangCapabilityID")
 		.vtable_generation(true)
 		.layout_tests(false)
 		.derive_copy(true)
@@ -40,6 +47,29 @@ fn main() {
 		.expect("Couldn't generate bindings.")
 		.write_to_file(out_dir.join("bindings.rs"))
 		.expect("Couldn't write bindings.");
+
+	modify_bindings(out_dir);
+
+	// rerun settings
+	println!("cargo:rerun-if-changed=src/cxxbind.rs");
+}
+
+/// Read bindings.rs file and modify it
+fn modify_bindings(out_dir: PathBuf) {
+	let bindings_path = out_dir.join("bindings.rs");
+	let bindings = std::fs::read_to_string(&bindings_path).expect("Couldn't read bindings file.");
+
+	let modified_bindings = bindings.replace("-> SlangResult", "-> crate::ResultCode");
+	// .replace("SlangResult", "crate::ffi::SlangResult")
+	// .replace("SlangMatrixLayoutMode", "crate::ffi::SlangMatrixLayoutMode")
+	// .replace("SlangInt", "crate::ffi::SlangInt")
+	// .replace("slang_SessionFlags", "crate::ffi::slang::SessionFlags")
+	// .replace("SlangCompileTarget", "crate::ffi::SlangCompileTarget")
+	// .replace("SlangProfileID", "crate::ffi::SlangProfileID")
+	// .replace("SlangTargetFlags", "crate::ffi::SlangTargetFlags")
+	// .replace("SlangFloatingPointMode", "crate::ffi::SlangFloatingPointMode")
+	// .replace("SlangLineDirectiveMode", "crate::ffi::SlangLineDirectiveMode");
+	std::fs::write(&bindings_path, modified_bindings).expect("Couldn't write modified bindings.");
 }
 
 fn link_libraries(slang_dir: &Path) {
