@@ -15,8 +15,8 @@ pub use cbind::{
     slang_createGlobalSessionWithoutStdLib, IBlobVtable, IComponentTypeVtable, IEntryPointVtable,
     IGlobalSessionVtable, IModuleVtable, ISessionVtable, ISlangUnknown__bindgen_vtable,
     ITypeConformanceVtable, ParameterCategory, ResultCode, ResultFacility, ResultFacilityCode,
-    SlangCapabilityID, SlangCompileTarget, SlangDebugInfoLevel, SlangFloatingPointMode,
-    SlangLineDirectiveMode, SlangMatrixLayoutMode, SlangOptimizationLevel, SlangProfileID,
-    SlangResourceAccess, SlangResourceShape, SlangSourceLanguage, SlangStage, SlangUUID,
-    SLANG_API_VERSION,
+    SlangCapabilityID, SlangCompileTarget, SlangDebugInfoFormat, SlangDebugInfoLevel,
+    SlangFloatingPointMode, SlangLineDirectiveMode, SlangMatrixLayoutMode, SlangOptimizationLevel,
+    SlangProfileID, SlangResourceAccess, SlangResourceShape, SlangSourceLanguage, SlangStage,
+    SlangUUID, SLANG_API_VERSION,
 };

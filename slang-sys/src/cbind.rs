@@ -1,4 +1,10 @@
-#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
+#![allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code,
+    unused_imports
+)]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 use std::ffi::{c_char, c_int, c_void};
@@ -203,7 +209,7 @@ impl ResultCode {
             ResultFacility::Typed(c) => c as i32,
             ResultFacility::PlainCode(c) => c,
         };
-        ResultCode((facility << 16 | code as i32))
+        ResultCode(facility << 16 | code as i32)
     }
 
     /// Get the facility part of the result code

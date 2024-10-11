@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use std::{pin::Pin, ptr::null};
 
 use autocxx::prelude::*;

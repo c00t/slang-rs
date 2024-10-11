@@ -1,12 +1,13 @@
 use slang_sys as sys;
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{CStr, CString};
 use std::pin::Pin;
-use std::ptr::{null, null_mut, NonNull};
+use std::ptr::{null, null_mut};
 
 pub use sys::{
     slang_CompilerOptionName as CompilerOptionName, slang_SessionDesc as SessionDesc,
     slang_TargetDesc as TargetDesc, EntryPointReflection, ProgramLayout, ResultCode,
-    SlangCapabilityID, SlangCompileTarget as CompileTarget, SlangDebugInfoLevel as DebugInfoLevel,
+    SlangCapabilityID, SlangCompileTarget as CompileTarget,
+    SlangDebugInfoFormat as DebugInfoFormat, SlangDebugInfoLevel as DebugInfoLevel,
     SlangFloatingPointMode as FloatingPointMode, SlangLineDirectiveMode as LineDirectiveMode,
     SlangMatrixLayoutMode as MatrixLayoutMode, SlangOptimizationLevel as OptimizationLevel,
     SlangProfileID, SlangSourceLanguage as SourceLanguage, SlangStage as Stage, SlangUUID as UUID,
@@ -15,9 +16,9 @@ pub use sys::{
 };
 
 macro_rules! vcall {
-	($self:expr, $method:ident($($args:expr),*)) => {
-		unsafe { ($self.vtable().$method)($self.as_raw(), $($args),*) }
-	};
+    ($self:expr, $method:ident($($args:expr),*)) => {
+        unsafe { ($self.vtable().$method)($self.as_raw(), $($args),*) }
+    };
 }
 
 const fn uuid(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> UUID {
@@ -634,8 +635,56 @@ impl OptionsBuilder {
     option!(LineDirectiveMode, line_directive_mode(mode: LineDirectiveMode));
     option!(Optimization, optimization(level: OptimizationLevel));
     option!(Obfuscate, obfuscate(enable: bool));
+
+    #[inline(always)]
+    pub fn vulkan_bind_shift(self, kind: u8, set: i32, shift: i32) -> Self {
+        // intvalue0: higher 8 bits for kind, lower bits is set
+        // intvalue1: shift
+        let intvalue0 = (((kind as u32) << 24) | set as u32) as i32;
+        self.push_ints(CompilerOptionName::VulkanBindShift, intvalue0, shift)
+    }
+
+    #[inline(always)]
+    pub fn vulkan_bind_globals(self, index: i32, set: i32) -> Self {
+        // intvalue0: index
+        // intvalue1: set
+        self.push_ints(CompilerOptionName::VulkanBindGlobals, index, set)
+    }
+
+    option!(VulkanInvertY, vulkan_invert_y(enable: bool));
+    option!(VulkanUseDxPositionW, vulkan_use_dx_position_w(enable: bool));
+    option!(VulkanUseEntryPointName, vulkan_use_entry_point_name(enable: bool));
+    option!(VulkanUseGLLayout, vulkan_use_gl_layout(enable: bool));
+    option!(VulkanEmitReflection, vulkan_emit_reflection(enable: bool));
     option!(GLSLForceScalarLayout, glsl_force_scalar_layout(enable: bool));
+    option!(EnableEffectAnnotations, enable_effect_annotations(enable: bool));
+    option!(EmitSpirvViaGLSL, emit_spirv_via_glsl(enable: bool));
     option!(EmitSpirvDirectly, emit_spirv_directly(enable: bool));
+    option!(SPIRVCoreGrammarJSON, spirv_core_grammar_json(path: &str));
+    option!(IncompleteLibrary, incomplete_library(enable: bool));
+
+    #[inline(always)]
+    pub fn downstream_args(self, compiler_name: &str, arguments: &[&str]) -> Self {
+        // contact arguments into a single string, separated by `\n`
+        let mut args = String::new();
+        for arg in arguments {
+            args.push_str(arg);
+            args.push('\n');
+        }
+        self.push_str2(CompilerOptionName::DownstreamArgs, compiler_name, &args)
+    }
+
+    option!(DumpIntermediates, dump_intermediates(enable: bool));
+    option!(DumpIntermediatePrefix, dump_intermediate_prefix(file_prefix: &str));
+
+    option!(DebugInformationFormat, debug_info_format(format: DebugInfoFormat));
+
+    #[inline(always)]
+    pub fn vulkan_bind_shift_all(self, kind: i32, shift: i32) -> Self {
+        self.push_ints(CompilerOptionName::VulkanBindShiftAll, kind, shift)
+    }
+    option!(GenerateWholeProgram, generate_whole_program(enable: bool));
+    option!(UseUpToDateBinaryModule, use_up_to_date_binary_module(enable: bool));
 
     // Debugging
     option!(NoCodeGen, no_code_gen(enable: bool));
